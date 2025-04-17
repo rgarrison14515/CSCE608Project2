@@ -1,14 +1,10 @@
 from generator import generate_records
 from builder import build_dense_tree, build_sparse_tree
 
+
 if __name__ == "__main__":
-    records = generate_records()
-    order = 13
+    test_keys = [10, 20, 30, 40, 50]
+    order = 4  # max 3 keys per node
 
-    print("Building dense B+ Tree...")
-    dense_tree = build_dense_tree(records, order)
-    dense_tree.print_tree()
-
-    print("\nBuilding sparse B+ Tree...")
-    sparse_tree = build_sparse_tree(records, order)
-    sparse_tree.print_tree()
+    tree = build_dense_tree(test_keys, order)
+    tree.print_tree()
