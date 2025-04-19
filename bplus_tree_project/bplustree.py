@@ -1,102 +1,139 @@
 class BPlusTreeNode:
-    def __init__(self, order, is_leaf=False):
+    def __init__(self, order, is_leaf=False, parent=None):
         self.order = order
         self.is_leaf = is_leaf
         self.keys = []
-        self.children = []
-        self.next_leaf = None  # only used for leaf nodes
+        self.children = []          # list[ BPlusTreeNode ]
+        self.next_leaf = None       # forward pointer for range scans
+        self.parent = parent        # back‑pointer used when bubbling splits
 
+    # convenience 
     def is_full(self):
-        # Max keys = order - 1 in most implementations; will refine if needed for edge cases
-        return len(self.keys) >= self.order - 1
+        return len(self.keys) > self.order - 1          # max keys = order - 1
+
+    def insert_key_sorted(self, key):
+        idx = 0
+        while idx < len(self.keys) and key > self.keys[idx]:
+            idx += 1
+        self.keys.insert(idx, key)
+        return idx
 
     def __str__(self):
-        return f"{'Leaf' if self.is_leaf else 'Internal'} Node with keys: {self.keys}"
+        typ = "Leaf" if self.is_leaf else "Internal"
+        return f"{typ} Node(keys={self.keys})"
 
-    def __repr__(self):
-        return self.__str__()
+    __repr__ = __str__
+
 
 class BPlusTree:
+    # constructor
     def __init__(self, order):
-        self.root = BPlusTreeNode(order, is_leaf=True)
         self.order = order
+        self.root = BPlusTreeNode(order, is_leaf=True)
 
-    #helper insert into leaf
-    def _insert_into_leaf(self, leaf, key):
-        """Insert key into the leaf node (no split)."""
-        # Keep keys sorted
-        i = 0
-        while i < len(leaf.keys) and key > leaf.keys[i]:
-            i += 1
-        leaf.keys.insert(i, key)
-
-    def _find_leaf(self, key, node=None):
-        """Traverse the tree to find the leaf node where key should be inserted."""
-        if node is None:
-            node = self.root
-
+    # helper: locate leaf that should contain key
+    def _find_leaf(self, key):
+        node = self.root
         while not node.is_leaf:
             i = 0
             while i < len(node.keys) and key >= node.keys[i]:
                 i += 1
             node = node.children[i]
-        
         return node
 
-    def _handle_leaf_split(self, leaf, key):
-        print(f"(Stub) Need to split leaf with keys: {leaf.keys} and insert key: {key}")
-        # Full implementation coming next
+    # helper: split a full *leaf* and return (new_leaf, promoted_key)
+    def _split_leaf(self, leaf):
+        mid = (self.order) // 2
+        new_leaf = BPlusTreeNode(self.order, is_leaf=True, parent=leaf.parent)
 
+        new_leaf.keys = leaf.keys[mid:]
+        leaf.keys = leaf.keys[:mid]
+
+        # link the leaf chain
+        new_leaf.next_leaf = leaf.next_leaf
+        leaf.next_leaf = new_leaf
+
+        promoted_key = new_leaf.keys[0]
+        return new_leaf, promoted_key
+
+    # helper: split a full *internal* node and return (new_right, promoted) 
+    def _split_internal(self, internal):
+        mid_idx = len(internal.keys) // 2
+        promoted_key = internal.keys[mid_idx]
+
+        right = BPlusTreeNode(self.order, is_leaf=False, parent=internal.parent)
+
+        # distribute keys / children
+        right.keys = internal.keys[mid_idx + 1:]
+        internal.keys = internal.keys[:mid_idx]
+
+        right.children = internal.children[mid_idx + 1:]
+        internal.children = internal.children[:mid_idx + 1]
+
+        # fix parents of moved children
+        for child in right.children:
+            child.parent = right
+
+        return right, promoted_key
+
+    # INSERT 
     def insert(self, key):
-        root = self.root
+        leaf = self._find_leaf(key)
+        leaf.insert_key_sorted(key)
 
-        # If root is a leaf and not full, handle like before
-        if root.is_leaf:
-            if not root.is_full():
-                self._insert_into_leaf(root, key)
-            else:
-                # First-time root split (still valid)
-                new_leaf = BPlusTreeNode(self.order, is_leaf=True)
-                temp_keys = root.keys + [key]
-                temp_keys.sort()
+        # if leaf overflow ⇒ split and propagate
+        if not leaf.is_full():
+            return
 
-                mid_index = len(temp_keys) // 2
-                left_keys = temp_keys[:mid_index]
-                right_keys = temp_keys[mid_index:]
+        new_leaf, promo = self._split_leaf(leaf)
+        self._propagate_split(leaf, new_leaf, promo)
 
-                root.keys = left_keys
-                new_leaf.keys = right_keys
+    # helper: bubble split results up the tree 
+    def _propagate_split(self, left, right, promo_key):
+        parent = left.parent
 
-                new_root = BPlusTreeNode(self.order, is_leaf=False)
-                new_root.keys = [right_keys[0]]
-                new_root.children = [root, new_leaf]
+        if parent is None:
+            # create new root
+            new_root = BPlusTreeNode(self.order, is_leaf=False)
+            new_root.keys = [promo_key]
+            new_root.children = [left, right]
+            left.parent = right.parent = new_root
+            self.root = new_root
+            return
 
-                self.root = new_root
-                root.next_leaf = new_leaf
-        else:
-            # Root is an internal node — insert recursively
-            leaf = self._find_leaf(key)
-            if not leaf.is_full():
-                self._insert_into_leaf(leaf, key)
-            else:
-                # Next step: split this leaf and propagate up
-                self._handle_leaf_split(leaf, key)
+        # insert separator and pointer to right sibling
+        insert_pos = parent.insert_key_sorted(promo_key)
+        parent.children.insert(insert_pos + 1, right)
+        right.parent = parent
 
+        if parent.is_full():
+            new_right, promo_up = self._split_internal(parent)
+            self._propagate_split(parent, new_right, promo_up)
 
-
-
-    def delete(self, key):
-        # Will implement later
-        pass
-
+    # SEARCH 
     def search(self, key):
-        # Will implement later
-        pass
+        leaf = self._find_leaf(key)
+        return key in leaf.keys
 
+    #  RANGE SEARCH: inclusive [start, end] 
     def range_search(self, start_key, end_key):
-        # Will implement later
-        pass
+        result = []
+        leaf = self._find_leaf(start_key)
 
+        while leaf is not None:
+            for k in leaf.keys:
+                if start_key <= k <= end_key:
+                    result.append(k)
+                elif k > end_key:
+                    return result
+            leaf = leaf.next_leaf
+        return result
+
+    # DELETE (stub – next milestone) 
+    def delete(self, key):
+        raise NotImplementedError("Deletion / rebalancing still TODO")
+
+    # pretty‑print 
     def print_tree(self, node=None, level=0):
         if node is None:
             node = self.root
