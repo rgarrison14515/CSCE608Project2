@@ -32,6 +32,11 @@ class BPlusTree:
         self.order = order
         self.root = BPlusTreeNode(order, is_leaf=True)
 
+    # Tracks nodes accessed/modified during operations, used because the project requires we do that
+    def _record(self, tracer, *nodes):
+        if tracer is not None:
+            tracer.extend(nodes)
+
     # walk down to correct leaf
     def _find_leaf(self, key):
         node = self.root
@@ -42,11 +47,12 @@ class BPlusTree:
             node = node.children[i]
         return node
 
-    # leaf split: create right sibling, return (new_leaf, key to promote)
+    # Split a full leaf node into two and return the new right node + key
     def _split_leaf(self, leaf):
         mid = (self.order) // 2
         new_leaf = BPlusTreeNode(self.order, is_leaf=True, parent=leaf.parent)
 
+        # Distribute keys across the two leaf nodes
         new_leaf.keys = leaf.keys[mid:]
         leaf.keys = leaf.keys[:mid]
 
@@ -54,6 +60,7 @@ class BPlusTree:
         new_leaf.next_leaf = leaf.next_leaf
         leaf.next_leaf = new_leaf
 
+        # promote the first key of new leaf to the parent
         promoted_key = new_leaf.keys[0]
         return new_leaf, promoted_key
 
@@ -64,7 +71,7 @@ class BPlusTree:
 
         right = BPlusTreeNode(self.order, is_leaf=False, parent=internal.parent)
 
-        # distribute keys
+        # split the keys and redistribute children
         right.keys = internal.keys[mid_idx + 1:]
         internal.keys = internal.keys[:mid_idx]
 
@@ -78,47 +85,68 @@ class BPlusTree:
         return right, promoted_key
 
     
-    def insert(self, key):
+    def insert(self, key, tracer=None):
         # Insert key into correct leaf
+        leaf_path = []  # to collect nodes before split
         leaf = self._find_leaf(key)
+        self._record(tracer, leaf)
+        before = str(leaf)
         leaf.insert_key_sorted(key)
 
-        # if no overflow we're done
-        if not leaf.is_full():
-            return
+        # if the leaf overflows, split it and send the promoted key up
+        if leaf.is_full():
+            new_leaf, promo = self._split_leaf(leaf)
+            self._record(tracer, new_leaf)  # new node created
+            self._propagate_split(leaf, new_leaf, promo, tracer)
 
-        # leaf overflow -> split and push the promoted key up
-        new_leaf, promo = self._split_leaf(leaf)
-        self._propagate_split(leaf, new_leaf, promo)
+        if tracer is not None and before != str(leaf):
+            tracer.append(("UPDATED", before, str(leaf)))
  
-    def _propagate_split(self, left, right, promo_key):
-        # Insert promoted key into parent of split node
+    # handle split propogation up a tree, create a new root if necessary
+    def _propagate_split(self, left, right, promo_key, tracer=None):
         parent = left.parent
 
-        if parent is None:
-            # No parent means we're splitting the root, create new root
+        # if there's no parent, the root was split so we need to create a new root node
+        if parent is None:                            
             new_root = BPlusTreeNode(self.order, is_leaf=False)
             new_root.keys = [promo_key]
             new_root.children = [left, right]
             left.parent = right.parent = new_root
             self.root = new_root
+            self._record(tracer, new_root)
             return
 
-        # insert promoted key and new right sibling into parent
+        # Insert the promoted key and right sibling into the parent
+        self._record(tracer, parent)
+        before = str(parent)
+
         insert_pos = parent.insert_key_sorted(promo_key)
         parent.children.insert(insert_pos + 1, right)
         right.parent = parent
 
-        # if parent overflows, split it (recursive)
+        # Track changes
+        if tracer is not None and before != str(parent):
+            tracer.append(("UPDATED", before, str(parent)))
+
+        # If the parent overflows, keep splitting upward (recursion)
         if parent.is_full():
             new_right, promo_up = self._split_internal(parent)
-            self._propagate_split(parent, new_right, promo_up)
+            self._record(tracer, new_right)           # new internal node
+            self._propagate_split(parent, new_right, promo_up, tracer)
+
 
     
     # search for a key by walking to the correct leaf and checking
-    def search(self, key):
-        leaf = self._find_leaf(key)
-        return key in leaf.keys
+    def search(self, key, tracer=None):
+        node = self.root
+        while True:
+            self._record(tracer, node) # track nodes touched
+            if node.is_leaf:
+                return key in node.keys
+            i = 0
+            while i < len(node.keys) and key >= node.keys[i]:
+                i += 1
+            node = node.children[i]
 
     #return all keys in [start key, end key] by scanning the leaf nodes
     def range_search(self, start_key, end_key):
@@ -130,7 +158,7 @@ class BPlusTree:
                 if start_key <= k <= end_key:
                     result.append(k)
                 elif k > end_key:
-                    return result
+                    return result # early exit if keys exceed the range
             leaf = leaf.next_leaf
         return result
 
@@ -145,7 +173,12 @@ class BPlusTree:
         parent = node.parent
         if parent is None:
             return None, -1, -1
-        idx = parent.children.index(node)
+
+        try:
+            idx = parent.children.index(node)
+        except ValueError:  # nodes already been detached
+            return None, -1, -1
+
         if want_left and idx > 0:
             return parent.children[idx - 1], idx - 1, idx - 1
         if not want_left and idx < len(parent.children) - 1:
@@ -153,32 +186,42 @@ class BPlusTree:
         return None, -1, -1
 
     # merge right into left and delete separator key from parent (used when borrowing fails)
-    def _merge_nodes(self, left, right, sep_idx):
+    def _merge_nodes(self, left, right, sep_idx, tracer=None):
         parent = left.parent
-        if not left.is_leaf:
-            # bring down separator key
+        self._record(tracer, left, right, parent)
+        before_left, before_parent = str(left), str(parent)
+
+        if not left.is_leaf:   
+            #For internal nodes: bring down separator key and merge
             left.keys.append(parent.keys[sep_idx])
             left.keys.extend(right.keys)
             left.children.extend(right.children)
             for child in right.children:
                 child.parent = left
-        else:
-            # merge keys + next pointers
+        else:  
+            # Leaft nodes: merge keys and update next_leaf pointer
             left.keys.extend(right.keys)
             left.next_leaf = right.next_leaf
 
-        # remove sep key and right child pointer from parent
+        # Remove separator key and right child pointer from the parent
         parent.keys.pop(sep_idx)
         parent.children.pop(sep_idx + 1)
 
-        # if parent under‑flows, recurse
+        # Record changes
+        if tracer is not None:
+            tracer.append(("UPDATED", before_left, str(left)))
+            tracer.append(("UPDATED", before_parent, str(parent)))
+
+        # If the parent is empty and is the root, shrink the tree height
         if parent is self.root and len(parent.keys) == 0:
             self.root = left
             self.root.parent = None
         elif parent is not self.root and len(parent.keys) < self._min_keys():
-            self._rebalance(parent)
+            # parent underflow, recurse upward
+            self._rebalance(parent, tracer)
 
-    # Make sure parent's separator key matches first key in this child (used in deletion)
+
+    # Ensure paren'ts separator key amtches first key of child node. Used during deletion to keep keys correct
     def _refresh_parent_key(self, node):
         parent = node.parent
         if parent is None:
@@ -188,74 +231,99 @@ class BPlusTree:
             parent.keys[idx - 1] = node.keys[0]
 
     
-    def delete(self, key):
-            # Walk to correct leaf
-            leaf = self._find_leaf(key)
-            if key not in leaf.keys:
-                return False
+    def delete(self, key, tracer=None):
+        leaf = self._find_leaf(key)
+        self._record(tracer, leaf)
 
-            # remove the key from the leaf
-            leaf.keys.remove(key)
+        if key not in leaf.keys: # key isn't present in the tree to begin with
+            return False
 
-            if leaf is self.root:
-                # shrink to empty leaf or single child
-                if len(self.root.keys) == 0 and not self.root.is_leaf:
-                    self.root = self.root.children[0]
-                    self.root.parent = None
-                return True
+        before_leaf = str(leaf)
+        leaf.keys.remove(key)
 
-            if len(leaf.keys) >= self._min_keys():
-                if leaf.keys:  #leaf isn't empty
-                    self._refresh_parent_key(leaf) # check if parent separator is still valid
-                return True
+        # log update for tracing
+        if tracer is not None and before_leaf != str(leaf):
+            tracer.append(("UPDATED", before_leaf, str(leaf)))
 
-            self._rebalance(leaf)
+        # Tree has only one node (root)
+        if leaf is self.root:
+            if len(self.root.keys) == 0 and not self.root.is_leaf:
+                self.root = self.root.children[0]
+                self.root.parent = None
             return True
 
-    def _rebalance(self, node):
+        # leaf has enough keys to stay valid
+        if len(leaf.keys) >= self._min_keys():
+            if leaf.keys:
+                self._refresh_parent_key(leaf) # maintain parent key correctness
+            return True
+
+        # Leaf underflows, needs rebalancing
+        self._rebalance(leaf, tracer)
+        return True
+
+    # Rebalances tree after node drops below minimum key count, tries to borrow from siblings and merges if needed
+    def _rebalance(self, node, tracer=None):
         min_k = self._min_keys()
 
-        # try borrowing a key from left sibling
-        left, left_idx, sep_idx = self._sibling(node, want_left=True)
+         # If the node has been merged out during an earlier step, stop
+        if node.parent is None:
+            return
+        try:
+            _ = node.parent.children.index(node)
+        except ValueError:
+            return
+        
+        # Try borrowing key from left sibling
+        left, _, sep_idx = self._sibling(node, want_left=True)
         if left and len(left.keys) > min_k:
+            self._record(tracer, left, node, node.parent)
+            before_left, before_node = str(left), str(node)
+
             if node.is_leaf:
-                # Move last key from left to front of kurrent node, update parent separator
-                borrow_key = left.keys.pop(-1)
-                node.keys.insert(0, borrow_key)
+                node.keys.insert(0, left.keys.pop(-1))
                 node.parent.keys[sep_idx] = node.keys[0]
             else:
-                # Move child + separator from left to current node, update parent
                 borrow_key = left.keys.pop(-1)
                 borrow_child = left.children.pop(-1)
                 node.keys.insert(0, node.parent.keys[sep_idx])
                 node.children.insert(0, borrow_child)
                 borrow_child.parent = node
                 node.parent.keys[sep_idx] = borrow_key
+
+            if tracer is not None:
+                tracer.append(("UPDATED", before_left, str(left)))
+                tracer.append(("UPDATED", before_node, str(node)))
             return
 
-        # 2. try borrowing a key from right sibling
-        right, right_idx, sep_idx = self._sibling(node, want_left=False)
+        # Try borrowing from right sibling
+        right, _, sep_idx = self._sibling(node, want_left=False)
         if right and len(right.keys) > min_k:
+            self._record(tracer, node, right, node.parent)
+            before_right, before_node = str(right), str(node)
+
             if node.is_leaf:
-                # Take the first key from right sibling, update parent separator
-                borrow_key = right.keys.pop(0)
-                node.keys.append(borrow_key)
+                node.keys.append(right.keys.pop(0))
                 node.parent.keys[sep_idx] = right.keys[0]
             else:
-                # Move separator and child from righ sibling into current node
                 borrow_key = right.keys.pop(0)
                 borrow_child = right.children.pop(0)
                 node.keys.append(node.parent.keys[sep_idx])
                 node.children.append(borrow_child)
                 borrow_child.parent = node
                 node.parent.keys[sep_idx] = borrow_key
+
+            if tracer is not None:
+                tracer.append(("UPDATED", before_right, str(right)))
+                tracer.append(("UPDATED", before_node, str(node)))
             return
 
-        # 3. can't borrow, so merge
-        if left:    
-            self._merge_nodes(left, node, sep_idx)
+        # Can't borrow, merge with a sibling
+        if left:
+            self._merge_nodes(left, node, sep_idx, tracer)
         else:
-            self._merge_nodes(node, right, sep_idx)
+            self._merge_nodes(node, right, sep_idx, tracer)
+
             
     # print tree function: prints tree level by level
     def print_tree(self, node=None, level=0):
