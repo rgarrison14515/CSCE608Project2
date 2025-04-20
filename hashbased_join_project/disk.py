@@ -51,4 +51,5 @@ class VirtualMemory:
         # simulate memory to disk write
         disk.write_block(blk)
         self.io_counter += 1
-        self.blocks.remove(blk)  # clear the slot from memory
+        if blk in self.blocks:  
+            self.blocks.remove(blk)  # clear the slot from memory
