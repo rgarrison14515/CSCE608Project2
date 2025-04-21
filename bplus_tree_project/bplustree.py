@@ -297,21 +297,21 @@ class BPlusTree:
             return
 
         # Try borrowing from right sibling
-        right, _, sep_idx = self._sibling(node, want_left=False)
+        right, _, sep_right = self._sibling(node, want_left=False)
         if right and len(right.keys) > min_k:
             self._record(tracer, node, right, node.parent)
             before_right, before_node = str(right), str(node)
 
             if node.is_leaf:
                 node.keys.append(right.keys.pop(0))
-                node.parent.keys[sep_idx] = right.keys[0]
+                node.parent.keys[sep_right] = right.keys[0]
             else:
                 borrow_key = right.keys.pop(0)
                 borrow_child = right.children.pop(0)
-                node.keys.append(node.parent.keys[sep_idx])
+                node.keys.append(node.parent.keys[sep_right])
                 node.children.append(borrow_child)
                 borrow_child.parent = node
-                node.parent.keys[sep_idx] = borrow_key
+                node.parent.keys[sep_right] = borrow_key
 
             if tracer is not None:
                 tracer.append(("UPDATED", before_right, str(right)))
@@ -322,7 +322,7 @@ class BPlusTree:
         if left:
             self._merge_nodes(left, node, sep_idx, tracer)
         else:
-            self._merge_nodes(node, right, sep_idx, tracer)
+            self._merge_nodes(node, right, sep_right, tracer)
 
             
     # print tree function: prints tree level by level
