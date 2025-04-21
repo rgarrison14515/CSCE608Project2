@@ -30,7 +30,7 @@ def run_one(order, is_dense):
     keys = generate_records()
     tree = build_dense_tree(keys, order) if is_dense else build_sparse_tree(keys, order)
     label = "DENSE" if is_dense else "SPARSE"
-    print(f"\n=== ORDER {order} | {label} TREE ===")
+    print(f"\n ORDER {order} | {label} TREE ")
 
     rng = random.Random(42)  
 

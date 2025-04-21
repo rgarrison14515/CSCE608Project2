@@ -37,8 +37,9 @@ if __name__ == "__main__":
         t.print_tree()
     '''
 
-        # DELETION DEMO: Show merging + height drop
-    print("\n=== Deletion Demo (Order 3) ===")
+    '''
+    # DELETION DEMO: Show merging + height drop
+    print("\n Deletion Demo (Order 3)")
     t = BPlusTree(order=3)
 
     for k in [10, 20, 30, 40]:
@@ -51,3 +52,4 @@ if __name__ == "__main__":
         print(f"\nDeleting {k}:")
         t.delete(k)
         t.print_tree()
+    '''
